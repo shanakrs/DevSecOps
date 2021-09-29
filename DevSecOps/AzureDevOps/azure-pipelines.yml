@@ -1,0 +1,93 @@
+# Docker
+# Build and push an image to Azure Container Registry
+# https://docs.microsoft.com/azure/devops/pipelines/languages/docker
+
+trigger:
+- master
+
+resources:
+- repo: self
+
+variables:
+
+  # Container registry service connection established during pipeline creation
+  imageRepository: 'devsecopsapplication'
+  
+  
+  dockerfilePath: '$(Build.SourcesDirectory)/Dockerfile'
+  tag: '$(Build.BuildId)'
+
+  # Agent VM image name
+  vmImageName: 'ubuntu-latest'
+
+stages:
+- stage: Build
+  displayName: Build and push stage
+  jobs:
+  - job: Build
+    displayName: Build
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: SonarCloudPrepare@1
+      displayName: Prepare Static Code Analysis Configuration
+      inputs:
+        SonarCloud: 'sonarcloudconnection' # Update your sonar cloud connection, Please preconfigure sonar cloud connection in service connections of azure devops project
+        organization: '' # Update your azure devops organization
+        scannerMode: 'CLI'
+        configMode: 'manual'
+        cliProjectKey: '' # Fetch Project Key from your sonar cloud and update here
+        cliProjectName: '' # Fetch Project Name from your sonar cloud and update here
+        cliSources: '.'
+    
+    - task: CmdLine@2
+      displayName: Build Docker Image
+      inputs:
+        script: |
+          docker build -t '$(imageRepository)' .
+                          
+          docker images | grep '$(imageRepository)'
+          
+          docker tag '$(imageRepository)':latest '$(imageRepository)':latest
+    - task: SonarCloudAnalyze@1
+      displayName: Run Static Code Analysis
+
+    - task: SonarCloudPublish@1
+      displayName: Publish Quality Gate Result
+      inputs:
+        pollingTimeoutSec: '300'
+    - task: WhiteSource Bolt@20
+      displayName: Open Source License Vulnerabilities Scanning
+      
+    - task: SnykSecurityScan@1
+      displayName: Security Scanning for Container Images
+      inputs:
+        serviceConnectionEndpoint: 'synkconnection' # Update your snyk connection, Please preconfigure snyk connection in service connections of azure devops project
+        testType: 'container'
+        dockerImageName: '$(imageRepository)'
+        dockerfilePath: 'Dockerfile'
+        monitorWhen: 'always'
+        failOnIssues: false
+    - task: AzureCLI@2
+      displayName: Publish Docker Image
+      inputs:
+        azureSubscription: ''  # Update your azure subscription
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          az acr login --name devsecopsacr.azurecr.io # Fetch your ACR connection from Azure Portal and Update here
+          docker tag '$(imageRepository)':latest devsecopsacr.azurecr.io/'$(imageRepository)':latest
+          docker images
+          docker push devsecopsacr.azurecr.io/'$(imageRepository)':latest
+
+    - task: HelmDeploy@0
+      displayName: Packaging for Helm
+      inputs:
+        command: 'package'
+        chartPath: 'charts/dotnetapp'
+    
+    - task: PublishBuildArtifacts@1
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: 'drop'
+        publishLocation: 'Container'
